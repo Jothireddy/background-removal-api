@@ -1,8 +1,6 @@
 const express = require('express');
 const axios = require('axios');
 const rembg = require('rembg');
-const fs = require('fs');
-const path = require('path');
 const sharp = require('sharp');
 const { exec } = require('child_process');
 const app = express();
@@ -37,40 +35,27 @@ app.post('/remove-bg', async (req, res) => {
         // Convert image data to a buffer
         const imageBuffer = Buffer.from(response.data, "binary");
 
-        // Write the original image to a temporary file
-        const tempImagePath = path.join(__dirname, 'temp', 'temp_image.png');
-        fs.writeFileSync(tempImagePath, imageBuffer);
+        // Crop the image based on bounding box coordinates
+        const croppedImageBuffer = await sharp(imageBuffer)
+            .extract({ left: x_min, top: y_min, width: x_max - x_min, height: y_max - y_min })
+            .toBuffer();
 
-        // Generate a processed image filename
-        const processedImageFilename = `processed_${Date.now()}.png`;
-        const processedImagePath = path.join(__dirname, 'output', processedImageFilename);
+        // Remove the background from the cropped image using rembg
+        const processedImageBuffer = await rembg.removeBackground(croppedImageBuffer);
 
-        // Run rembg to remove the background using Python subprocess
-        exec(`rembg i "${tempImagePath}" "${processedImagePath}"`, (error, stdout, stderr) => {
-            if (error) {
-                console.error(`exec error: ${error}`);
-                return res.status(500).json({ error: "Failed to process the image" });
-            }
-            if (stderr) {
-                console.error(`stderr: ${stderr}`);
-            }
-            console.log(`stdout: ${stdout}`);
+        // Create a buffer for the processed image, instead of saving it to the filesystem
+        const processedImageBase64 = processedImageBuffer.toString('base64');
 
-            // Return the URL of the processed image
-            const publicUrl = `/output/${processedImageFilename}`;
-            res.status(200).json({
-                original_image_url: image_url,
-                processed_image_url: publicUrl
-            });
+        // Return the URL of the processed image
+        res.status(200).json({
+            original_image_url: image_url,
+            processed_image_base64: `data:image/png;base64,${processedImageBase64}`,
         });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: "Failed to process the image" });
     }
 });
-
-// Serve processed images from the 'output' directory
-app.use('/output', express.static(path.join(__dirname, 'output')));
 
 // Start the server
 const PORT = process.env.PORT || 3000;
