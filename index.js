@@ -1,16 +1,18 @@
 const express = require('express');
 const axios = require('axios');
-const { removeBackgroundFromImageUrl } = require('rembg');
 const fs = require('fs');
 const path = require('path');
+const { exec } = require('child_process');
 const app = express();
 
 // Middleware to parse JSON requests
 app.use(express.json());
 
+// POST endpoint to remove background
 app.post('/remove-background', async (req, res) => {
     const { image_url, bounding_box } = req.body;
 
+    // Validate input
     if (!image_url || !bounding_box) {
         return res.status(400).json({ error: "Missing image URL or bounding box coordinates" });
     }
@@ -22,28 +24,42 @@ app.post('/remove-background', async (req, res) => {
         const imageResponse = await axios.get(image_url, { responseType: 'arraybuffer' });
         const imageBuffer = Buffer.from(imageResponse.data);
 
-        // Crop the image based on bounding box coordinates (using an image processing library like sharp)
-        const sharp = require('sharp');
-        const croppedImageBuffer = await sharp(imageBuffer)
-            .extract({ left: x_min, top: y_min, width: x_max - x_min, height: y_max - y_min })
-            .toBuffer();
+        // Ensure the 'temp' directory exists
+        const tempDir = path.join(__dirname, 'temp');
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir);
+        }
 
-        // Remove the background from the cropped image using rembg
-        const processedImageBuffer = await removeBackgroundFromImageUrl(croppedImageBuffer);
+        // Save the image temporarily as a file for processing
+        const tempImagePath = path.join(tempDir, 'temp_image.png');
+        fs.writeFileSync(tempImagePath, imageBuffer);
 
-        // Save the processed image to a file (temporary location)
-        const outputPath = path.join(__dirname, 'output', 'processed_image.png');
-        fs.writeFileSync(outputPath, processedImageBuffer);
+        // Generate a processed image filename
+        const processedImageFilename = `processed_${Date.now()}.png`;
+        const processedImagePath = path.join(__dirname, 'output', processedImageFilename);
 
-        // Return the URL of the processed image (for now, you can use a local server or Vercel to serve the image)
-        res.status(200).json({
-            original_image_url: image_url,
-            processed_image_url: `https://your-vercel-deployment-url/output/processed_image.png`,
+        // Run rembg as a child process to remove background
+        exec(`rembg i "${tempImagePath}" "${processedImagePath}"`, (error, stdout, stderr) => {
+            if (error) {
+                console.error(`exec error: ${error}`);
+                return res.status(500).json({ error: "Failed to process the image" });
+            }
+            if (stderr) {
+                console.error(`stderr: ${stderr}`);
+            }
+            console.log(`stdout: ${stdout}`);
+
+            // Return the URL of the processed image
+            const publicUrl = `${req.protocol}://${req.get('host')}/output/${processedImageFilename}`;
+            res.status(200).json({
+                original_image_url: image_url,
+                processed_image_url: publicUrl
+            });
         });
 
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: "Error processing the image" });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Failed to process the image" });
     }
 });
 
